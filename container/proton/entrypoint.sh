@@ -46,7 +46,7 @@ fi
 
 # Install/Update Enshrouded
 echo "$(timestamp) INFO: Updating Enshrouded Dedicated Server"
-steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir "$ENSHROUDED_PATH" +login anonymous +app_update ${STEAM_APP_ID} validate +quit
+${STEAMCMD_PATH}/steamcmd.sh +@sSteamCmdForcePlatformType windows +force_install_dir "$ENSHROUDED_PATH" +login anonymous +app_update ${STEAM_APP_ID} validate +quit
 
 # Check that steamcmd was successful
 if [ $? != 0 ]; then
@@ -55,9 +55,11 @@ if [ $? != 0 ]; then
 fi
 
 # Copy example server config if not already present
-if ! [ -f "${ENSHROUDED_PATH}/enshrouded_server.json" ]; then
-    echo "$(timestamp) INFO: Enshrouded server config not present, copying example"
-    cp /home/steam/enshrouded_server_example.json ${ENSHROUDED_PATH}/enshrouded_server.json
+if [ $EXTERNAL_CONFIG -eq 0 ]; then
+    if ! [ -f "${ENSHROUDED_PATH}/enshrouded_server.json" ]; then
+        echo "$(timestamp) INFO: Enshrouded server config not present, copying example"
+        cp /home/steam/enshrouded_server_example.json ${ENSHROUDED_PATH}/enshrouded_server.json
+    fi
 fi
 
 # Check for proper save permissions
@@ -73,16 +75,20 @@ fi
 rm "${ENSHROUDED_PATH}/savegame/test"
 
 # Modify server config to match our arguments
-echo "$(timestamp) INFO: Updating Enshrouded Server configuration"
-tmpfile=$(mktemp)
-jq --arg n "$SERVER_NAME" '.name = $n' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
-if [ -n "$SERVER_PASSWORD" ]; then
-    jq --arg p "$SERVER_PASSWORD" '.userGroups[].password = $p' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
+if [ $EXTERNAL_CONFIG -eq 0 ]; then
+    echo "$(timestamp) INFO: Updating Enshrouded Server configuration"
+    tmpfile=$(mktemp)
+    jq --arg n "$SERVER_NAME" '.name = $n' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
+    if [ -n "$SERVER_PASSWORD" ]; then
+        jq --arg p "$SERVER_PASSWORD" '.userGroups[].password = $p' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
+    fi
+    jq --arg g "$GAME_PORT" '.gamePort = ($g | tonumber)' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
+    jq --arg q "$QUERY_PORT" '.queryPort = ($q | tonumber)' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
+    jq --arg s "$SERVER_SLOTS" '.slotCount = ($s | tonumber)' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
+    jq --arg i "$SERVER_IP" '.ip = $i' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
+else
+    echo "$(timestamp) INFO: EXTERNAL_CONFIG set to true, not updating Enshrouded Server configuration"
 fi
-jq --arg g "$GAME_PORT" '.gamePort = ($g | tonumber)' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
-jq --arg q "$QUERY_PORT" '.queryPort = ($q | tonumber)' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
-jq --arg s "$SERVER_SLOTS" '.slotCount = ($s | tonumber)' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
-jq --arg i "$SERVER_IP" '.ip = $i' ${ENSHROUDED_CONFIG} > "$tmpfile" && mv "$tmpfile" $ENSHROUDED_CONFIG
 
 # Wine talks too much and it's annoying
 export WINEDEBUG=-all
@@ -103,7 +109,7 @@ ln -sf /proc/1/fd/1 "${ENSHROUDED_PATH}/logs/enshrouded_server.log"
 # Launch Enshrouded
 echo "$(timestamp) INFO: Starting Enshrouded Dedicated Server"
 
-${STEAM_PATH}/compatibilitytools.d/GE-Proton${GE_PROTON_VERSION}/proton run ${ENSHROUDED_PATH}/enshrouded_server.exe &
+${STEAMCMD_PATH}/compatibilitytools.d/GE-Proton${GE_PROTON_VERSION}/proton run ${ENSHROUDED_PATH}/enshrouded_server.exe &
 
 # Find pid for enshrouded_server.exe
 timeout=0
@@ -120,12 +126,15 @@ while [ $timeout -lt 11 ]; do
     echo "$(timestamp) INFO: Waiting for enshrouded_server.exe to be running"
 done
 
-# Hold us open until we recieve a SIGTERM
+# Hold us open until we recieve a SIGTERM by opening a job waiting for the process to finish then calling `wait`
+tail --pid=$enshrouded_pid -f /dev/null &
 wait
 
-# Handle post SIGTERM from here
-# Hold us open until WSServer-Linux pid closes, indicating full shutdown, then go home
-tail --pid=$enshrouded_pid -f /dev/null
+# Handle post SIGTERM from here (SIGTERM will cancel the `wait` immediately even though the job is not done yet)
+# Check if the enshrouded_server.exe process is still running, and if so, wait for it to close, indicating full shutdown, then go home
+if ps -e | grep "enshrouded_serv"; then
+    tail --pid=$enshrouded_pid -f /dev/null
+fi
 
 # o7
 echo "$(timestamp) INFO: Shutdown complete."
